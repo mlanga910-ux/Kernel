@@ -1,34 +1,55 @@
-#!/usr/bin/env bash
-set -euo pipefail
+name: Xiaomi Kernel Build (dandelion)
 
-CONFIG="${1:-}"
+on:
+  workflow_dispatch:
 
-if [[ -z "$CONFIG" ]]; then
-  echo "ERROR: missing path to .config"
-  exit 1
-fi
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
 
-if [[ ! -f "$CONFIG" ]]; then
-  echo "ERROR: config file not found at: $CONFIG"
-  exit 1
-fi
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
 
-# Forbidden items — MTK kernel fails if these are enabled
-bad_items=(
-  CONFIG_BLK_DEV_NVME
-  CONFIG_SCSI
-  CONFIG_SCSI_SAS
-  CONFIG_SCSI_DMA
-  CONFIG_FB
-  CONFIG_DRM
-)
+      - name: Install toolchain
+        run: |
+          sudo apt update
+          sudo apt install -y gcc-aarch64-linux-gnu bc bison flex libssl-dev make
 
-for item in "${bad_items[@]}"; do
-  if grep -q "^${item}=y" "$CONFIG" || grep -q "^${item}=m" "$CONFIG"; then
-    echo "❌ ERROR: forbidden kernel feature enabled: $item"
-    exit 2
-  fi
-done
+      - name: Clone Xiaomi kernel source
+        run: |
+          git clone --depth=1 https://github.com/MiCode/XiaomiKernelOpenSource.git kernel
+          cd kernel
+          git checkout dandelion-q-oss || true
 
-echo "✔ Config sanitized: OK"
-exit 0
+      - name: Copy custom config
+        run: |
+          cp ./custom.config ./kernel/.config
+
+      - name: Make config executable
+        run: |
+          chmod +x scripts/check_config.sh
+
+      - name: Sanity check config
+        run: |
+          ./scripts/check_config.sh ./kernel/.config
+
+      - name: Build kernel Image.gz
+        run: |
+          cd kernel
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image.gz
+
+      - name: Prepare AnyKernel3
+        run: |
+          mkdir output
+          cp kernel/arch/arm64/boot/Image.gz AnyKernel3/
+          cd AnyKernel3
+          zip -r ../output/Kernel-Angelican.zip ./*
+
+      - name: Upload final kernel ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Angelican
+          path: output/Kernel-Angelican.zip
